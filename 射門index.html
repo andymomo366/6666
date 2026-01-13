@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>點球對決：直覺射擊版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: white;
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Inter', system-ui, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            background: linear-gradient(to bottom, #38bdf8 0%, #38bdf8 40%, #15803d 40%, #166534 100%);
+            border-radius: 12px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            cursor: crosshair;
+        }
+        .ui-panel {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 40px;
+            pointer-events: none;
+        }
+        .menu-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 50;
+        }
+        .card {
+            background: #1e293b;
+            padding: 2.5rem;
+            border-radius: 1.5rem;
+            text-align: center;
+            border: 1px solid #334155;
+            max-width: 400px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="relative">
+        <canvas id="gameCanvas"></canvas>
+        
+        <!-- 頂部資訊欄 -->
+        <div class="ui-panel">
+            <div class="bg-black/40 backdrop-blur-md p-4 rounded-xl border border-white/10">
+                <p class="text-xs uppercase tracking-widest text-gray-400">當前得分</p>
+                <h2 class="text-3xl font-black"><span id="score">0</span> <span class="text-lg text-gray-500">/ <span id="attempts">0</span></span></h2>
+            </div>
+            <div class="text-right">
+                <p id="message" class="text-xl font-bold text-yellow-400 drop-shadow-lg">點擊足球射門！</p>
+                <p id="difficulty-tag" class="text-xs text-blue-400 font-mono"></p>
+            </div>
+        </div>
+
+        <!-- 主選單 -->
+        <div id="main-menu" class="menu-overlay">
+            <div class="card">
+                <h1 class="text-4xl font-black mb-2 italic">GOAL STRIKER</h1>
+                <p class="text-gray-400 mb-8 text-sm">直覺式射門體驗：點擊位置決定弧度與角度</p>
+                
+                <div class="space-y-3">
+                    <button onclick="startGame(0.04, '新手')" class="w-full py-3 rounded-lg bg-blue-600 hover:bg-blue-500 font-bold transition">新手模式</button>
+                    <button onclick="startGame(0.07, '職業')" class="w-full py-3 rounded-lg bg-green-600 hover:bg-green-500 font-bold transition">職業模式</button>
+                    <button onclick="startGame(0.12, '世界級')" class="w-full py-3 rounded-lg bg-red-600 hover:bg-red-500 font-bold transition">世界級模式</button>
+                </div>
+                <p class="mt-6 text-xs text-gray-500 italic">提示：點擊球的兩側可踢出強大的弧線球</p>
+            </div>
+        </div>
+
+        <!-- 結算畫面 -->
+        <div id="end-screen" class="menu-overlay hidden">
+            <div class="card">
+                <h2 id="end-title" class="text-4xl font-black mb-4">遊戲結束</h2>
+                <p id="end-stats" class="text-xl mb-8">進球率: 0%</p>
+                <button onclick="location.reload()" class="w-full py-4 rounded-xl bg-white text-black font-black hover:bg-gray-200 transition">再次挑戰</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const attemptsEl = document.getElementById('attempts');
+    const msgEl = document.getElementById('message');
+    const mainMenu = document.getElementById('main-menu');
+    const endScreen = document.getElementById('end-screen');
+
+    // 使用物件包裹常數，避免 Identifier already declared 錯誤
+    const CONFIG = {
+        W: 800,
+        H: 600,
+        MAX_ATTEMPTS: 10
+    };
+
+    canvas.width = CONFIG.W;
+    canvas.height = CONFIG.H;
+
+    let gameActive = false;
+    let score = 0;
+    let attempts = 0;
+    let aiDifficulty = 0.05;
+
+    // 物件定義
+    const goal = { x: CONFIG.W / 2 - 250, y: 120, w: 500, h: 220, midX: CONFIG.W / 2 };
+    
+    const ball = {
+        originX: CONFIG.W / 2,
+        originY: 520,
+        x: CONFIG.W / 2,
+        y: 520,
+        z: 1, 
+        vx: 0,
+        vy: 0,
+        gravity: 0.12,
+        curve: 0,
+        inFlight: false,
+        radius: 25
+    };
+
+    const keeper = {
+        x: CONFIG.W / 2,
+        y: 280,
+        targetX: CONFIG.W / 2,
+        w: 90,
+        h: 130,
+        color: '#fbbf24'
+    };
+
+    window.startGame = function(diff, label) {
+        aiDifficulty = diff;
+        document.getElementById('difficulty-tag').innerText = "難度: " + label;
+        mainMenu.classList.add('hidden');
+        gameActive = true;
+        resetBall();
+    };
+
+    function resetBall() {
+        ball.x = ball.originX;
+        ball.y = ball.originY;
+        ball.z = 1;
+        ball.vx = 0;
+        ball.vy = 0;
+        ball.curve = 0;
+        ball.inFlight = false;
+        keeper.targetX = CONFIG.W / 2;
+        msgEl.innerText = "瞄準球門空檔！";
+        msgEl.style.color = "#fbbf24";
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+        if (!gameActive || ball.inFlight) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+
+        ball.inFlight = true;
+        attempts++;
+        
+        const dx = clickX - ball.x;
+        const dy = clickY - ball.y;
+        
+        ball.vx = dx * 0.045;
+        ball.vy = dy * 0.045;
+        
+        const offCenter = (clickX - ball.x) / ball.radius;
+        ball.curve = offCenter * 1.5;
+
+        setTimeout(() => {
+            const predictionError = (1 - aiDifficulty * 8) * 100;
+            keeper.targetX = clickX + (Math.random() - 0.5) * predictionError;
+        }, 150);
+    });
+
+    function update() {
+        if (!gameActive) return;
+
+        keeper.x += (keeper.targetX - keeper.x) * aiDifficulty;
+        
+        const margin = 40;
+        if (keeper.x < goal.x + margin) keeper.x = goal.x + margin;
+        if (keeper.x > goal.x + goal.w - margin) keeper.x = goal.x + goal.w - margin;
+
+        if (ball.inFlight) {
+            ball.x += ball.vx + ball.curve;
+            ball.y += ball.vy;
+            ball.vy += ball.gravity;
+            ball.z -= 0.015;
+            
+            ball.vx += ball.curve * 0.1;
+
+            if (ball.z <= 0.45) {
+                checkGoal();
+            }
+        }
+    }
+
+    function checkGoal() {
+        ball.inFlight = false;
+        
+        const isWithinGoalX = ball.x > goal.x && ball.x < goal.x + goal.w;
+        const isWithinGoalY = ball.y > goal.y && ball.y < goal.y + goal.h;
+        
+        const distToKeeper = Math.hypot(ball.x - keeper.x, ball.y - keeper.y);
+        const saved = distToKeeper < 75;
+
+        if (isWithinGoalX && isWithinGoalY && !saved) {
+            score++;
+            msgEl.innerText = "太棒了！完美進球！";
+            msgEl.style.color = "#4ade80";
+        } else if (saved) {
+            msgEl.innerText = "被擋住了！精彩防守！";
+            msgEl.style.color = "#f87171";
+        } else {
+            msgEl.innerText = "可惜，射偏了！";
+            msgEl.style.color = "#94a3b8";
+        }
+
+        scoreEl.innerText = score;
+        attemptsEl.innerText = attempts;
+
+        setTimeout(() => {
+            if (attempts >= CONFIG.MAX_ATTEMPTS) {
+                showEndScreen();
+            } else {
+                resetBall();
+            }
+        }, 1200);
+    }
+
+    function showEndScreen() {
+        gameActive = false;
+        endScreen.classList.remove('hidden');
+        const rate = Math.round((score / CONFIG.MAX_ATTEMPTS) * 100);
+        document.getElementById('end-stats').innerText = `最終得分: ${score} | 進球率: ${rate}%`;
+        document.getElementById('end-title').innerText = score >= 6 ? "🏆 傳奇射手" : "⚽ 繼續努力";
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, CONFIG.W, CONFIG.H);
+
+        // 1. 草地裝飾
+        ctx.strokeStyle = "rgba(255,255,255,0.1)";
+        ctx.lineWidth = 2;
+        for(let i=0; i<6; i++) {
+            ctx.beginPath();
+            ctx.moveTo(0, 350 + i*50);
+            ctx.lineTo(CONFIG.W, 350 + i*50);
+            ctx.stroke();
+        }
+
+        // 2. 球門
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = "rgba(0,0,0,0.5)";
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 10;
+        ctx.lineJoin = "round";
+        ctx.strokeRect(goal.x, goal.y, goal.w, goal.h);
+        
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "rgba(255,255,255,0.2)";
+        ctx.lineWidth = 1;
+        for(let i=1; i<20; i++) {
+            ctx.beginPath();
+            ctx.moveTo(goal.x + (goal.w/20)*i, goal.y);
+            ctx.lineTo(goal.x + (goal.w/20)*i, goal.y + goal.h);
+            ctx.stroke();
+        }
+
+        // 3. 守門員
+        const kw = keeper.w;
+        const kh = keeper.h;
+        ctx.fillStyle = keeper.color;
+        ctx.beginPath();
+        ctx.roundRect(keeper.x - kw/2, keeper.y - kh/2, kw, kh, 10);
+        ctx.fill();
+        ctx.fillStyle = "#fef3c7";
+        ctx.beginPath();
+        ctx.arc(keeper.x, keeper.y - kh/2 - 10, 18, 0, Math.PI*2);
+        ctx.fill();
+
+        // 4. 球的陰影
+        const shadowOpacity = ball.z * 0.3;
+        ctx.fillStyle = `rgba(0,0,0,${shadowOpacity})`;
+        ctx.beginPath();
+        ctx.ellipse(ball.x, 560, ball.radius * ball.z * 1.5, ball.radius * ball.z * 0.5, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // 5. 足球
+        const currentRadius = ball.radius * ball.z;
+        ctx.save();
+        ctx.translate(ball.x, ball.y);
+        const grad = ctx.createRadialGradient(-currentRadius*0.3, -currentRadius*0.3, currentRadius*0.1, 0, 0, currentRadius);
+        grad.addColorStop(0, "#ffffff");
+        grad.addColorStop(1, "#94a3b8");
+        ctx.beginPath();
+        ctx.arc(0, 0, currentRadius, 0, Math.PI*2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.8)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+
+        update();
+        requestAnimationFrame(draw);
+    }
+
+    draw();
+</script>
+</body>
+</html>
